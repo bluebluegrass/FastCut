@@ -84,7 +84,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="header">
-        <div className="logo">✂️ CutCut</div>
+        <div className="logo">✂️ FastCut</div>
         <div className="tagline">Video transcript editor — cut filler words instantly</div>
       </header>
 

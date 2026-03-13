@@ -1,4 +1,4 @@
-# ✂️ CutCut — Video Transcript Editor
+# ✂️ FastCut — Video Transcript Editor
 
 Upload a video → get a word-level transcript with millisecond timestamps → click words to mark them for deletion → export a cleanly cut video.
 
