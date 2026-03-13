@@ -58,6 +58,10 @@ function getEstimatedReviewMs(segments, timeMs) {
   return Math.max(0, timeMs - getDeletedMsBefore(segments, timeMs));
 }
 
+function getWordKey(word) {
+  return word.trim().toLowerCase();
+}
+
 export default function TranscriptEditor({ session, videoUrl, mediaType, onExport }) {
   const [words, setWords] = useState(() =>
     session.words.map((w, i) => ({
@@ -75,6 +79,7 @@ export default function TranscriptEditor({ session, videoUrl, mediaType, onExpor
   const [lastSkippedSegment, setLastSkippedSegment] = useState(null);
   const [skipToast, setSkipToast] = useState(null);
   const [selectedReviewSegment, setSelectedReviewSegment] = useState(null);
+  const [selectedWordId, setSelectedWordId] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const mediaRef = useRef();
   const boundedPlaybackRef = useRef(null);
@@ -101,6 +106,11 @@ export default function TranscriptEditor({ session, videoUrl, mediaType, onExpor
 
   const nextDeletedSegment = findNextSegment(deletedSegments, currentMs);
   const currentEstimatedMs = getEstimatedReviewMs(deletedSegments, currentMs);
+  const repeatedWordCounts = words.reduce((acc, word) => {
+    const key = getWordKey(word.word);
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
   const deletedCount = words.filter((w) => w.deleted).length + manualCuts.length;
   const fillerCount = words.filter((w) => w.is_filler && !w.deleted).length;
   const pauseCount = words.filter((w) => w.kind === "pause" && !w.deleted).length;
@@ -224,11 +234,25 @@ export default function TranscriptEditor({ session, videoUrl, mediaType, onExpor
     }
   }, [deletedSegments, selectedReviewSegment]);
 
-  const toggleWord = useCallback((id) => {
+  const buildReviewSegment = useCallback((item) => ({
+    id: item.id?.toString?.().startsWith("manual-") ? item.id : `word-${item.id}`,
+    start_ms: item.start_ms,
+    end_ms: item.end_ms,
+    label: item.word || item.label,
+    source: item.kind || item.source || "word",
+  }), []);
+
+  const setWordDeleted = useCallback((word, nextDeleted) => {
     setWords((prev) =>
-      prev.map((w) => (w.id === id ? { ...w, deleted: !w.deleted } : w))
+      prev.map((w) => (w.id === word.id ? { ...w, deleted: nextDeleted } : w))
     );
-  }, []);
+    setSelectedWordId(word.id);
+    if (nextDeleted) {
+      setSelectedReviewSegment(buildReviewSegment(word));
+    } else {
+      setSelectedReviewSegment((prev) => (prev?.id === `word-${word.id}` ? null : prev));
+    }
+  }, [buildReviewSegment]);
 
   const markAllFillers = () => {
     setWords((prev) =>
@@ -240,6 +264,7 @@ export default function TranscriptEditor({ session, videoUrl, mediaType, onExpor
     setWords((prev) => prev.map((w) => ({ ...w, deleted: false })));
     setManualCuts([]);
     setSelectedReviewSegment(null);
+    setSelectedWordId(null);
   };
 
   const findAndDelete = () => {
@@ -276,6 +301,13 @@ export default function TranscriptEditor({ session, videoUrl, mediaType, onExpor
     const media = mediaRef.current;
     if (!media) return;
 
+    if (word.id != null) {
+      setSelectedWordId(word.id);
+    }
+    if (word.deleted || word.kind === "pause" || word.kind === "audio_filler" || word.source === "manual_cut") {
+      setSelectedReviewSegment(buildReviewSegment(word));
+    }
+
     const skippedSegment = reviewMode ? findSegmentAt(deletedSegments, word.start_ms) : null;
     const targetMs = skippedSegment ? skippedSegment.end_ms : word.start_ms;
     seekWithGuard(targetMs);
@@ -303,13 +335,7 @@ export default function TranscriptEditor({ session, videoUrl, mediaType, onExpor
       label: `[manual cut ${msToTime(start)}-${msToTime(end)}]`,
     };
     setManualCuts((prev) => [...prev, newCut]);
-    setSelectedReviewSegment({
-      id: newCut.id,
-      start_ms: newCut.start_ms,
-      end_ms: newCut.end_ms,
-      label: newCut.label,
-      source: "manual_cut",
-    });
+    setSelectedReviewSegment(buildReviewSegment(newCut));
   };
 
   const removeManualCut = (id) => {
@@ -392,7 +418,7 @@ export default function TranscriptEditor({ session, videoUrl, mediaType, onExpor
                 checked={reviewMode}
                 onChange={(e) => setReviewMode(e.target.checked)}
               />
-              <span>Preview cuts</span>
+              <span>Review edited version</span>
             </label>
           </div>
           <div className="review-status">
@@ -454,7 +480,7 @@ export default function TranscriptEditor({ session, videoUrl, mediaType, onExpor
         <div className="stats">
           <div className="stat">
             <span className="stat-val">{words.length}</span>
-            <span className="stat-label">Transcript items</span>
+            <span className="stat-label">Transcript segments</span>
           </div>
           <div className="stat stat-filler">
             <span className="stat-val">{fillerCount}</span>
@@ -470,7 +496,7 @@ export default function TranscriptEditor({ session, videoUrl, mediaType, onExpor
           </div>
           <div className="stat stat-deleted">
             <span className="stat-val">{deletedCount}</span>
-            <span className="stat-label">Marked to cut</span>
+            <span className="stat-label">Will be removed</span>
           </div>
           <div className="stat stat-time">
             <span className="stat-val">{(deletedMs / 1000).toFixed(1)}s</span>
@@ -547,13 +573,7 @@ export default function TranscriptEditor({ session, videoUrl, mediaType, onExpor
                   <button
                     className="manual-cut-jump"
                     onClick={() => {
-                      setSelectedReviewSegment({
-                        id: cut.id,
-                        start_ms: cut.start_ms,
-                        end_ms: cut.end_ms,
-                        label: cut.label,
-                        source: "manual_cut",
-                      });
+                      setSelectedReviewSegment(buildReviewSegment(cut));
                       clickWord(cut);
                     }}
                   >
@@ -594,12 +614,15 @@ export default function TranscriptEditor({ session, videoUrl, mediaType, onExpor
       <div className="editor-right">
         <div className="transcript-header">
           <span>Transcript</span>
-          <span className="transcript-hint">Detected filler sounds are auto-marked · click to toggle cut</span>
+          <span className="transcript-hint">Click text to preview · use cut to remove · times show original vs preview</span>
         </div>
         <div className="transcript">
           {words.map((w) => {
             const isCurrent =
               currentMs >= w.start_ms && currentMs <= w.end_ms;
+            const isSelected = selectedWordId === w.id;
+            const isRepeated = (repeatedWordCounts[getWordKey(w.word)] || 0) > 1;
+            const showMeta = isCurrent || isSelected || w.deleted || isRepeated;
             const classes = [
               "chip",
               w.deleted
@@ -612,31 +635,42 @@ export default function TranscriptEditor({ session, videoUrl, mediaType, onExpor
                 ? "chip-filler"
                 : "chip-normal",
               isCurrent ? "chip-current" : "",
+              isSelected ? "chip-selected" : "",
             ]
               .filter(Boolean)
               .join(" ");
+            const originalPreviewTitle = `Original ${msToTime(w.start_ms)} → ${msToTime(w.end_ms)}\nPreview ${msToTime(getEstimatedReviewMs(deletedSegments, w.start_ms))} → ${msToTime(getEstimatedReviewMs(deletedSegments, w.end_ms))}`;
 
             return (
               <span
                 key={w.id}
                 className={classes}
-                title={`Original ${msToTime(w.start_ms)} → ${msToTime(w.end_ms)}\nPreview ${msToTime(getEstimatedReviewMs(deletedSegments, w.start_ms))} → ${msToTime(getEstimatedReviewMs(deletedSegments, w.end_ms))}`}
-                onClick={() => {
-                  toggleWord(w.id);
-                  clickWord(w);
-                  if (w.deleted || w.kind === "pause") {
-                    setSelectedReviewSegment({
-                      id: `word-${w.id}`,
-                      start_ms: w.start_ms,
-                      end_ms: w.end_ms,
-                      label: w.word,
-                      source: w.kind,
-                    });
-                  }
-                }}
+                title={originalPreviewTitle}
               >
-                {w.deleted ? <s>{w.word}</s> : w.word}
-                {isCurrent && <span className="current-dot" />}
+                <span className="chip-row">
+                  <button
+                    type="button"
+                    className="chip-main-button"
+                    onClick={() => clickWord(w)}
+                  >
+                    {w.deleted ? <s>{w.word}</s> : w.word}
+                  </button>
+                  <button
+                    type="button"
+                    className={`chip-cut-toggle ${w.deleted ? "chip-cut-toggle-active" : ""}`}
+                    onClick={() => setWordDeleted(w, !w.deleted)}
+                    aria-label={w.deleted ? `Keep ${w.word}` : `Cut ${w.word}`}
+                  >
+                    {w.deleted ? "keep" : "cut"}
+                  </button>
+                  {isCurrent && <span className="current-dot" />}
+                </span>
+                {showMeta && (
+                  <span className="chip-meta">
+                    <span>orig {msToTime(w.start_ms)}</span>
+                    <span>prev {msToTime(getEstimatedReviewMs(deletedSegments, w.start_ms))}</span>
+                  </span>
+                )}
               </span>
             );
           })}

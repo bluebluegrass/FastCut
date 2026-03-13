@@ -531,22 +531,24 @@ body {
 
 /* Word chips */
 .chip {
-  display: inline-block;
-  padding: 3px 7px;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px 7px;
   margin: 3px 3px;
   border-radius: 4px;
-  cursor: pointer;
   transition: all 0.12s;
   border: 1px solid transparent;
   position: relative;
   user-select: none;
+  min-width: 44px;
 }
 .chip-normal {
   background: #22222a;
   border-color: var(--border);
   color: var(--text);
 }
-.chip-normal:hover { border-color: var(--accent); color: var(--accent); }
+.chip-normal:hover { border-color: var(--accent); }
 
 .chip-filler {
   background: var(--filler-bg);
@@ -580,8 +582,59 @@ body {
 
 .chip-current {
   box-shadow: 0 0 0 2px var(--current);
-  color: var(--current) !important;
   border-color: var(--current) !important;
+}
+.chip-selected {
+  transform: translateY(-1px);
+  border-color: #ffd166 !important;
+  box-shadow: 0 0 0 1px rgba(255, 209, 102, 0.2);
+}
+.chip-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.chip-main-button,
+.chip-cut-toggle {
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+}
+.chip-main-button {
+  cursor: pointer;
+  text-align: left;
+}
+.chip-main-button:hover {
+  color: var(--accent);
+}
+.chip-cut-toggle {
+  cursor: pointer;
+  padding: 1px 5px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-size: 10px;
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.8;
+}
+.chip-cut-toggle:hover {
+  opacity: 1;
+}
+.chip-cut-toggle-active {
+  background: rgba(239, 68, 68, 0.12);
+}
+.chip-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 10px;
+  line-height: 1.1;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
 }
 .current-dot {
   position: absolute;
