@@ -1,0 +1,9 @@
+.env
+.env.swp
+__pycache__/
+uploads/
+outputs/
+dist/
+node_modules/
+.venv/
+sample_*.wav
