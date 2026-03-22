@@ -6,3 +6,4 @@ python-multipart
 python-dotenv
 openai-whisper
 silero-vad
+qwen-asr

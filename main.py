@@ -3,6 +3,7 @@ import json
 import tempfile
 import subprocess
 import re
+import logging
 import wave
 import audioop
 import array
@@ -21,6 +22,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 app = FastAPI(title="Video Transcript Editor")
+logger = logging.getLogger("fastcut.export")
 
 app.add_middleware(
     CORSMiddleware,
@@ -59,6 +61,14 @@ TRANSCRIPTION_PROVIDER = os.environ.get("TRANSCRIPTION_PROVIDER", "local_whisper
 LOCAL_WHISPER_MODEL = os.environ.get("LOCAL_WHISPER_MODEL", "base")
 LOCAL_WHISPER_LANGUAGE = os.environ.get("LOCAL_WHISPER_LANGUAGE", "zh")
 WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
+QWEN_ASR_MODEL = os.environ.get("QWEN_ASR_MODEL", "Qwen/Qwen3-ASR-0.6B")
+QWEN_ASR_ALIGNER_MODEL = os.environ.get("QWEN_ASR_ALIGNER_MODEL", "Qwen/Qwen3-ForcedAligner-0.6B")
+QWEN_ASR_LANGUAGE = os.environ.get("QWEN_ASR_LANGUAGE", "Chinese")
+QWEN_ASR_DEVICE = os.environ.get("QWEN_ASR_DEVICE", "auto")
+QWEN_ASR_DTYPE = os.environ.get("QWEN_ASR_DTYPE", "auto")
+QWEN_ASR_MAX_BATCH_SIZE = int(os.environ.get("QWEN_ASR_MAX_BATCH_SIZE", "8"))
+QWEN_ASR_MAX_NEW_TOKENS = int(os.environ.get("QWEN_ASR_MAX_NEW_TOKENS", "256"))
+QWEN_ASR_ENABLE_ALIGNER = os.environ.get("QWEN_ASR_ENABLE_ALIGNER", "true").lower() in {"1", "true", "yes", "on"}
 FUNASR_MODEL = os.environ.get("FUNASR_MODEL", "paraformer-zh")
 FUNASR_DEVICE = os.environ.get("FUNASR_DEVICE", "cpu")
 MAX_TRANSCRIPTION_FILE_BYTES = 24 * 1024 * 1024
@@ -86,6 +96,8 @@ EXPORT_WORD_START_PAD_MS = 90
 EXPORT_WORD_END_PAD_MS = 45
 EXPORT_SHORT_WORD_START_PAD_MS = 170
 EXPORT_SHORT_WORD_END_PAD_MS = 75
+KEEP_TAIL_PROTECT_MS = 60
+KEEP_HEAD_PROTECT_MS = 60
 EXPORT_LOW_ENERGY_SEARCH_MS = 260
 EXPORT_LOW_ENERGY_FRAME_MS = 20
 EXPORT_LOW_ENERGY_RMS_THRESHOLD = 280
@@ -471,17 +483,32 @@ def snap_boundary_to_silence(boundary_ms: int, silences: list[tuple[int, int]], 
 
 
 def align_deleted_segments_to_silence(
-    deleted_words: list[Word], audio_path: Path, duration_ms: int
+    deleted_words: list[Word], session_words: list[Word], audio_path: Path, duration_ms: int
 ) -> list[tuple[int, int]]:
     try:
         silences = get_silence_intervals_ms(audio_path, duration_ms)
     except Exception:
         silences = []
 
+    deleted_keys = {
+        (item.word, item.start_ms, item.end_ms, item.kind)
+        for item in deleted_words
+    }
+    kept_words = [
+        item for item in session_words
+        if item.kind == "word" and (item.word, item.start_ms, item.end_ms, item.kind) not in deleted_keys
+    ]
+
     aligned_segments: list[tuple[int, int]] = []
     for item in deleted_words:
         start_ms = item.start_ms
         end_ms = item.end_ms
+        raw_start_ms = start_ms
+        raw_end_ms = end_ms
+        padded_start_ms = start_ms
+        padded_end_ms = end_ms
+        prev_kept = None
+        next_kept = None
 
         if item.kind == "word":
             word_duration_ms = max(1, item.end_ms - item.start_ms)
@@ -491,13 +518,49 @@ def align_deleted_segments_to_silence(
                 start_pad_ms = max(start_pad_ms, EXPORT_SHORT_WORD_START_PAD_MS)
                 end_pad_ms = max(end_pad_ms, EXPORT_SHORT_WORD_END_PAD_MS)
 
-            start_ms = max(0, start_ms - start_pad_ms)
-            end_ms = min(duration_ms, end_ms + end_pad_ms)
-            start_ms = snap_start_boundary_to_low_energy(audio_path, start_ms)
+            padded_start_ms = max(0, start_ms - start_pad_ms)
+            padded_end_ms = min(duration_ms, end_ms + end_pad_ms)
+            start_ms = snap_start_boundary_to_low_energy(audio_path, padded_start_ms)
+            end_ms = padded_end_ms
+
+            for candidate in kept_words:
+                if candidate.end_ms <= item.start_ms:
+                    prev_kept = candidate
+                    continue
+                if candidate.start_ms >= item.end_ms:
+                    next_kept = candidate
+                    break
+
+            # Keep a small protected margin on adjacent kept words so
+            # aggressive padding for deleted short words does not clip
+            # the perceptual tail/head of the words we intend to keep.
+            if prev_kept is not None:
+                start_ms = max(start_ms, prev_kept.end_ms - KEEP_TAIL_PROTECT_MS)
+            if next_kept is not None:
+                end_ms = min(end_ms, next_kept.start_ms + KEEP_HEAD_PROTECT_MS)
+
+            logger.info(
+                "export-boundary token=%s raw=%s->%s padded=%s->%s clamped=%s->%s prev_kept=%s next_kept=%s",
+                item.word,
+                raw_start_ms,
+                raw_end_ms,
+                padded_start_ms,
+                padded_end_ms,
+                start_ms,
+                end_ms,
+                f"{prev_kept.word}@{prev_kept.start_ms}->{prev_kept.end_ms}" if prev_kept else "-",
+                f"{next_kept.word}@{next_kept.start_ms}->{next_kept.end_ms}" if next_kept else "-",
+            )
 
         if silences:
             start_ms = snap_boundary_to_silence(start_ms, silences, duration_ms)
             end_ms = snap_boundary_to_silence(end_ms, silences, duration_ms)
+
+        if item.kind == "word":
+            if prev_kept is not None:
+                start_ms = max(start_ms, prev_kept.end_ms - KEEP_TAIL_PROTECT_MS)
+            if next_kept is not None:
+                end_ms = min(end_ms, next_kept.start_ms + KEEP_HEAD_PROTECT_MS)
 
         start_ms = max(0, min(start_ms, duration_ms))
         end_ms = max(0, min(end_ms, duration_ms))
@@ -580,12 +643,100 @@ def get_torch_device() -> str:
     return "cpu"
 
 
+def get_runtime_torch_device(preferred: str) -> str:
+    if preferred and preferred != "auto":
+        return preferred
+
+    try:
+        import torch
+    except ImportError:
+        return "cpu"
+
+    if torch.cuda.is_available():
+        return "cuda:0"
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def get_qwen_language() -> str | None:
+    language = (QWEN_ASR_LANGUAGE or "").strip()
+    if not language or language.lower() in {"auto", "none"}:
+        return None
+
+    aliases = {
+        "zh": "Chinese",
+        "chinese": "Chinese",
+        "mandarin": "Chinese",
+        "en": "English",
+        "english": "English",
+        "ja": "Japanese",
+        "japanese": "Japanese",
+        "ko": "Korean",
+        "korean": "Korean",
+        "yue": "Cantonese",
+        "cantonese": "Cantonese",
+    }
+    return aliases.get(language.lower(), language)
+
+
+def get_qwen_dtype():
+    try:
+        import torch
+    except ImportError:
+        return None
+
+    if QWEN_ASR_DTYPE and QWEN_ASR_DTYPE != "auto":
+        explicit = getattr(torch, QWEN_ASR_DTYPE, None)
+        if explicit is None:
+            raise HTTPException(status_code=500, detail=f"Unsupported QWEN_ASR_DTYPE: {QWEN_ASR_DTYPE}")
+        return explicit
+
+    device = get_runtime_torch_device(QWEN_ASR_DEVICE)
+    if device.startswith("cuda"):
+        return torch.bfloat16
+    return torch.float32
+
+
 @lru_cache(maxsize=1)
 def get_local_whisper_model():
     import whisper
 
     device = get_torch_device()
     return whisper.load_model(LOCAL_WHISPER_MODEL, device=device)
+
+
+@lru_cache(maxsize=1)
+def get_qwen_asr_model():
+    try:
+        from qwen_asr import Qwen3ASRModel
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="qwen-asr is not installed. Install qwen-asr in the backend environment to use qwen3_asr_local.",
+        ) from exc
+
+    init_kwargs = {
+        "dtype": get_qwen_dtype(),
+        "device_map": get_runtime_torch_device(QWEN_ASR_DEVICE),
+        "max_inference_batch_size": QWEN_ASR_MAX_BATCH_SIZE,
+        "max_new_tokens": QWEN_ASR_MAX_NEW_TOKENS,
+    }
+
+    if QWEN_ASR_ENABLE_ALIGNER and QWEN_ASR_ALIGNER_MODEL:
+        init_kwargs["forced_aligner"] = QWEN_ASR_ALIGNER_MODEL
+        init_kwargs["forced_aligner_kwargs"] = {
+            "dtype": get_qwen_dtype(),
+            "device_map": get_runtime_torch_device(QWEN_ASR_DEVICE),
+        }
+
+    try:
+        return Qwen3ASRModel.from_pretrained(QWEN_ASR_MODEL, **init_kwargs)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load Qwen3 ASR model '{QWEN_ASR_MODEL}': {exc}",
+        ) from exc
 
 
 def transcribe_audio_file_openai(audio_path: Path):
@@ -980,6 +1131,83 @@ def transcribe_audio_file_local(audio_path: Path) -> list["Word"]:
     return normalize_zero_length_words(words, get_media_duration_ms(audio_path))
 
 
+def transcribe_audio_file_qwen_local(audio_path: Path, debug_path: Path | None = None) -> list["Word"]:
+    model = get_qwen_asr_model()
+    language = get_qwen_language()
+
+    try:
+        results = model.transcribe(
+            audio=str(audio_path),
+            language=language,
+            return_time_stamps=QWEN_ASR_ENABLE_ALIGNER,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Qwen3 ASR transcription failed: {exc}") from exc
+
+    serializable_results = []
+    words: list[Word] = []
+
+    for result in results or []:
+        result_text = getattr(result, "text", None)
+        result_language = getattr(result, "language", None)
+        time_stamps = getattr(result, "time_stamps", None) or []
+        serializable_result = {
+            "language": result_language,
+            "text": result_text,
+            "time_stamps": [],
+        }
+
+        for item in time_stamps:
+            text = getattr(item, "text", None)
+            start_time = getattr(item, "start_time", None)
+            end_time = getattr(item, "end_time", None)
+
+            if isinstance(item, dict):
+                text = item.get("text", text)
+                start_time = item.get("start_time", start_time)
+                end_time = item.get("end_time", end_time)
+
+            serializable_result["time_stamps"].append({
+                "text": text,
+                "start_time": start_time,
+                "end_time": end_time,
+            })
+
+            if text is None or start_time is None or end_time is None:
+                continue
+
+            word_text = str(text).strip()
+            if not word_text:
+                continue
+
+            words.append(Word(
+                word=word_text,
+                start_ms=int(float(start_time) * 1000),
+                end_ms=int(float(end_time) * 1000),
+                is_filler=is_filler(word_text),
+                deleted=False,
+            ))
+
+        serializable_results.append(serializable_result)
+
+    if debug_path is not None:
+        with open(debug_path, "w", encoding="utf-8") as f:
+            json.dump({"results": serializable_results}, f, ensure_ascii=False, indent=2)
+
+    if not words:
+        if not QWEN_ASR_ENABLE_ALIGNER:
+            raise HTTPException(
+                status_code=500,
+                detail="Qwen3 ASR local returned no timestamps. Enable QWEN_ASR_ENABLE_ALIGNER and QWEN_ASR_ALIGNER_MODEL for editing.",
+            )
+        raise HTTPException(
+            status_code=500,
+            detail="Qwen3 ASR local returned no word timestamps. Check aligner setup or model compatibility.",
+        )
+
+    return normalize_zero_length_words(words, get_media_duration_ms(audio_path))
+
+
 def split_audio_for_transcription(audio_path: Path, chunk_dir: Path) -> list[Path]:
     chunk_pattern = chunk_dir / "chunk_%03d.mp3"
     result = subprocess.run([
@@ -1113,6 +1341,8 @@ def transcribe_audio_file_funasr(audio_path: Path, debug_path: Path | None = Non
 def transcribe_audio_with_timestamps(audio_path: Path, debug_path: Path | None = None) -> list["Word"]:
     if TRANSCRIPTION_PROVIDER == "funasr":
         return transcribe_audio_file_funasr(audio_path, debug_path=debug_path)
+    if TRANSCRIPTION_PROVIDER == "qwen3_asr_local":
+        return transcribe_audio_file_qwen_local(audio_path, debug_path=debug_path)
     if TRANSCRIPTION_PROVIDER == "openai_whisper_chunked":
         return transcribe_audio_file_openai_chunked(audio_path, debug_path=debug_path)
     if TRANSCRIPTION_PROVIDER == "local_whisper":
@@ -1244,6 +1474,7 @@ async def export_video(req: ExportRequest):
     video_path = session["video_path"]
     audio_path = Path(session.get("audio_path", ""))
     duration_ms = session["duration_ms"]
+    session_words = [Word(**item) for item in session.get("words", [])]
 
     if not Path(video_path).exists():
         raise HTTPException(status_code=404, detail="Video file not found")
@@ -1251,7 +1482,7 @@ async def export_video(req: ExportRequest):
         raise HTTPException(status_code=404, detail="Audio file not found")
 
     # Build list of segments to DELETE, sorted by start time
-    deleted = align_deleted_segments_to_silence(req.deleted_words, audio_path, duration_ms)
+    deleted = align_deleted_segments_to_silence(req.deleted_words, session_words, audio_path, duration_ms)
 
     # Build list of segments to KEEP (inverse of deleted)
     keep_segments = []
