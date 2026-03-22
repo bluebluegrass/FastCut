@@ -62,24 +62,44 @@ function getWordKey(word) {
   return word.trim().toLowerCase();
 }
 
-export default function TranscriptEditor({ session, videoUrl, mediaType, onExport }) {
+function buildOccurrenceMeta(words) {
+  const totals = words.reduce((acc, word) => {
+    const key = getWordKey(word.word);
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+
+  const seen = {};
+  return words.reduce((acc, word) => {
+    const key = getWordKey(word.word);
+    seen[key] = (seen[key] || 0) + 1;
+    acc[word.id] = {
+      count: totals[key],
+      index: seen[key],
+    };
+    return acc;
+  }, {});
+}
+
+export default function TranscriptEditor({ session, draft, videoUrl, mediaType, onDraftChange, onExport }) {
+  const hydrateSessionKeyRef = useRef(null);
   const [words, setWords] = useState(() =>
-    session.words.map((w, i) => ({
+    (draft?.words ?? session.words).map((w, i) => ({
       ...w,
-      id: i,
-      deleted: w.kind === "audio_filler" ? true : w.deleted,
+      id: w.id ?? i,
+      deleted: w.deleted ?? (w.kind === "audio_filler" ? true : false),
     }))
   );
   const [currentMs, setCurrentMs] = useState(0);
   const [searchText, setSearchText] = useState("");
   const [manualStartMs, setManualStartMs] = useState(0);
   const [manualEndMs, setManualEndMs] = useState(Math.min(session.duration_ms, 1000));
-  const [manualCuts, setManualCuts] = useState([]);
-  const [reviewMode, setReviewMode] = useState(false);
+  const [manualCuts, setManualCuts] = useState(draft?.manualCuts ?? []);
+  const [reviewMode, setReviewMode] = useState(draft?.reviewMode ?? false);
   const [lastSkippedSegment, setLastSkippedSegment] = useState(null);
   const [skipToast, setSkipToast] = useState(null);
-  const [selectedReviewSegment, setSelectedReviewSegment] = useState(null);
-  const [selectedWordId, setSelectedWordId] = useState(null);
+  const [selectedReviewSegment, setSelectedReviewSegment] = useState(draft?.selectedReviewSegment ?? null);
+  const [selectedWordId, setSelectedWordId] = useState(draft?.selectedWordId ?? null);
   const [isPlaying, setIsPlaying] = useState(false);
   const mediaRef = useRef();
   const boundedPlaybackRef = useRef(null);
@@ -106,11 +126,7 @@ export default function TranscriptEditor({ session, videoUrl, mediaType, onExpor
 
   const nextDeletedSegment = findNextSegment(deletedSegments, currentMs);
   const currentEstimatedMs = getEstimatedReviewMs(deletedSegments, currentMs);
-  const repeatedWordCounts = words.reduce((acc, word) => {
-    const key = getWordKey(word.word);
-    acc[key] = (acc[key] || 0) + 1;
-    return acc;
-  }, {});
+  const occurrenceMeta = buildOccurrenceMeta(words);
   const deletedCount = words.filter((w) => w.deleted).length + manualCuts.length;
   const fillerCount = words.filter((w) => w.is_filler && !w.deleted).length;
   const pauseCount = words.filter((w) => w.kind === "pause" && !w.deleted).length;
@@ -205,6 +221,35 @@ export default function TranscriptEditor({ session, videoUrl, mediaType, onExpor
       media.removeEventListener("pause", onPause);
     };
   }, [stopBoundedPlayback]);
+
+  useEffect(() => {
+    if (hydrateSessionKeyRef.current === session.video_id) {
+      return;
+    }
+
+    const nextWords = (draft?.words ?? session.words).map((w, i) => ({
+      ...w,
+      id: w.id ?? i,
+      deleted: w.deleted ?? (w.kind === "audio_filler" ? true : false),
+    }));
+    hydrateSessionKeyRef.current = session.video_id;
+    setWords(nextWords);
+    setManualCuts(draft?.manualCuts ?? []);
+    setReviewMode(draft?.reviewMode ?? false);
+    setSelectedReviewSegment(draft?.selectedReviewSegment ?? null);
+    setSelectedWordId(draft?.selectedWordId ?? null);
+  }, [draft, session.video_id, session.words]);
+
+  useEffect(() => {
+    if (!onDraftChange) return;
+    onDraftChange({
+      words,
+      manualCuts,
+      reviewMode,
+      selectedReviewSegment,
+      selectedWordId,
+    });
+  }, [manualCuts, onDraftChange, reviewMode, selectedReviewSegment, selectedWordId, words]);
 
   useEffect(() => {
     if (!reviewMode || !isPlaying) {
@@ -618,11 +663,10 @@ export default function TranscriptEditor({ session, videoUrl, mediaType, onExpor
         </div>
         <div className="transcript">
           {words.map((w) => {
-            const isCurrent =
-              currentMs >= w.start_ms && currentMs <= w.end_ms;
             const isSelected = selectedWordId === w.id;
-            const isRepeated = (repeatedWordCounts[getWordKey(w.word)] || 0) > 1;
-            const showMeta = isCurrent || isSelected || w.deleted || isRepeated;
+            const occurrence = occurrenceMeta[w.id] ?? { count: 1, index: 1 };
+            const isRepeated = occurrence.count > 1;
+            const showMeta = isSelected || w.deleted;
             const classes = [
               "chip",
               w.deleted
@@ -634,7 +678,6 @@ export default function TranscriptEditor({ session, videoUrl, mediaType, onExpor
                 : w.is_filler
                 ? "chip-filler"
                 : "chip-normal",
-              isCurrent ? "chip-current" : "",
               isSelected ? "chip-selected" : "",
             ]
               .filter(Boolean)
@@ -655,6 +698,11 @@ export default function TranscriptEditor({ session, videoUrl, mediaType, onExpor
                   >
                     {w.deleted ? <s>{w.word}</s> : w.word}
                   </button>
+                  {isRepeated && (
+                    <span className="chip-occurrence" aria-hidden="true">
+                      #{occurrence.index}
+                    </span>
+                  )}
                   <button
                     type="button"
                     className={`chip-cut-toggle ${w.deleted ? "chip-cut-toggle-active" : ""}`}
@@ -663,7 +711,6 @@ export default function TranscriptEditor({ session, videoUrl, mediaType, onExpor
                   >
                     {w.deleted ? "keep" : "cut"}
                   </button>
-                  {isCurrent && <span className="current-dot" />}
                 </span>
                 {showMeta && (
                   <span className="chip-meta">

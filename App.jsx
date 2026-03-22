@@ -3,6 +3,7 @@ import TranscriptEditor from "./TranscriptEditor";
 import "./App.css";
 
 const API = "http://localhost:8000";
+const DRAFT_STORAGE_PREFIX = "fastcut:draft:";
 
 export default function App() {
   const [stage, setStage] = useState("upload"); // upload | transcribing | editing | exporting | done
@@ -10,6 +11,7 @@ export default function App() {
   const [videoUrl, setVideoUrl] = useState(null);
   const [mediaType, setMediaType] = useState("video");
   const [session, setSession] = useState(null); // { video_id, words, duration_ms }
+  const [editorDraft, setEditorDraft] = useState(null);
   const [error, setError] = useState(null);
   const [exportUrl, setExportUrl] = useState(null);
   const fileInputRef = useRef();
@@ -24,6 +26,7 @@ export default function App() {
     setVideoFile(file);
     setVideoUrl(URL.createObjectURL(file));
     setMediaType(file.type.startsWith("audio/") ? "audio" : "video");
+    setEditorDraft(null);
     setError(null);
     setExportUrl(null);
   };
@@ -40,13 +43,21 @@ export default function App() {
         throw new Error(err.detail || "Transcription failed");
       }
       const data = await res.json();
+      const savedDraft = sessionStorage.getItem(`${DRAFT_STORAGE_PREFIX}${data.video_id}`);
       setSession(data);
+      setEditorDraft(savedDraft ? JSON.parse(savedDraft) : null);
       setStage("editing");
     } catch (e) {
       setError(e.message);
       setStage("upload");
     }
   };
+
+  const handleDraftChange = useCallback((nextDraft) => {
+    setEditorDraft(nextDraft);
+    if (!session?.video_id) return;
+    sessionStorage.setItem(`${DRAFT_STORAGE_PREFIX}${session.video_id}`, JSON.stringify(nextDraft));
+  }, [session?.video_id]);
 
   const handleExport = async (deletedWords) => {
     setStage("exporting");
@@ -71,12 +82,21 @@ export default function App() {
     }
   };
 
+  const backToEditing = () => {
+    setStage("editing");
+    setError(null);
+  };
+
   const reset = () => {
+    if (session?.video_id) {
+      sessionStorage.removeItem(`${DRAFT_STORAGE_PREFIX}${session.video_id}`);
+    }
     setStage("upload");
     setVideoFile(null);
     setVideoUrl(null);
     setMediaType("video");
     setSession(null);
+    setEditorDraft(null);
     setExportUrl(null);
     setError(null);
   };
@@ -151,8 +171,10 @@ export default function App() {
       {stage === "editing" && session && (
         <TranscriptEditor
           session={session}
+          draft={editorDraft}
           videoUrl={videoUrl}
           mediaType={mediaType}
+          onDraftChange={handleDraftChange}
           onExport={handleExport}
         />
       )}
@@ -170,14 +192,17 @@ export default function App() {
           <div className="done-icon">✅</div>
           <div className="done-title">Your edited video is ready!</div>
           {mediaType === "audio" ? (
-            <audio src={exportUrl} controls className="preview-audio" />
+            <audio src={exportUrl} controls className="done-preview-audio" />
           ) : (
-            <video src={exportUrl} controls className="preview-video" />
+            <video src={exportUrl} controls className="done-preview-video" />
           )}
           <div className="done-actions">
             <a href={exportUrl} download={mediaType === "audio" ? "edited_audio.m4a" : "edited_video.mp4"} className="btn-primary">
               ⬇️ Download Edited {mediaType === "audio" ? "Audio" : "Video"}
             </a>
+            <button className="btn-secondary" onClick={backToEditing}>
+              Back to editing
+            </button>
             <button className="btn-secondary" onClick={reset}>
               Start Over
             </button>

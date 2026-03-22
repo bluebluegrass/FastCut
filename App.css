@@ -97,9 +97,14 @@ body {
 .file-selected { font-size: 16px; font-weight: 600; color: var(--accent); margin-bottom: 4px; }
 .file-size { color: var(--muted); font-size: 12px; }
 
-.preview-wrap { width: 100%; max-width: 600px; }
-.preview-video { width: 100%; border-radius: 8px; border: 1px solid var(--border); }
-.preview-audio { width: 100%; }
+.preview-wrap { width: 100%; display: flex; justify-content: center; }
+.preview-video {
+  width: min(100%, 360px);
+  max-height: 420px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+.preview-audio { width: min(100%, 420px); }
 
 /* Buttons */
 .btn-primary {
@@ -160,6 +165,15 @@ body {
 .done-icon { font-size: 64px; }
 .done-title { font-family: 'Syne', sans-serif; font-size: 24px; font-weight: 700; color: var(--accent); }
 .done-actions { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
+.done-preview-video {
+  width: min(100%, 360px);
+  max-height: 420px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+.done-preview-audio {
+  width: min(100%, 420px);
+}
 
 /* Editor layout */
 .editor {
@@ -537,11 +551,12 @@ body {
   padding: 5px 7px;
   margin: 3px 3px;
   border-radius: 4px;
-  transition: all 0.12s;
+  transition: border-color 0.12s, box-shadow 0.12s, background-color 0.12s, color 0.12s, opacity 0.12s;
   border: 1px solid transparent;
   position: relative;
   user-select: none;
   min-width: 44px;
+  vertical-align: top;
 }
 .chip-normal {
   background: #22222a;
@@ -580,10 +595,6 @@ body {
 .chip-deleted s { text-decoration-color: var(--deleted); }
 .chip-deleted:hover { opacity: 1; }
 
-.chip-current {
-  box-shadow: 0 0 0 2px var(--current);
-  border-color: var(--current) !important;
-}
 .chip-selected {
   transform: translateY(-1px);
   border-color: #ffd166 !important;
@@ -610,6 +621,14 @@ body {
 .chip-main-button:hover {
   color: var(--accent);
 }
+.chip-occurrence {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--muted);
+  padding: 1px 4px;
+  border-radius: 999px;
+  border: 1px solid rgba(107, 107, 122, 0.35);
+}
 .chip-cut-toggle {
   cursor: pointer;
   padding: 1px 5px;
@@ -635,11 +654,5 @@ body {
   line-height: 1.1;
   color: var(--muted);
   font-family: 'IBM Plex Mono', monospace;
-}
-.current-dot {
-  position: absolute;
-  top: -5px; right: -3px;
-  width: 6px; height: 6px;
-  border-radius: 50%;
-  background: var(--current);
+  min-height: 22px;
 }
