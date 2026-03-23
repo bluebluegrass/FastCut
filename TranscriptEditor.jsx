@@ -3,6 +3,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 const REVIEW_EDGE_WINDOW_MS = 700;
 const REVIEW_POLL_MS = 40;
 const REVIEW_SEEK_GUARD_MS = 160;
+const DRAG_SELECTION_THRESHOLD_PX = 5;
 
 function msToTime(ms) {
   const s = Math.floor(ms / 1000);
@@ -62,6 +63,16 @@ function getWordKey(word) {
   return word.trim().toLowerCase();
 }
 
+function getPreviewRange(startIndex, currentIndex) {
+  if (startIndex == null || currentIndex == null) {
+    return null;
+  }
+  return {
+    start: Math.min(startIndex, currentIndex),
+    end: Math.max(startIndex, currentIndex),
+  };
+}
+
 function buildOccurrenceMeta(words) {
   const totals = words.reduce((acc, word) => {
     const key = getWordKey(word.word);
@@ -101,9 +112,25 @@ export default function TranscriptEditor({ session, draft, videoUrl, mediaType, 
   const [selectedReviewSegment, setSelectedReviewSegment] = useState(draft?.selectedReviewSegment ?? null);
   const [selectedWordId, setSelectedWordId] = useState(draft?.selectedWordId ?? null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isDraggingSelection, setIsDraggingSelection] = useState(false);
+  const [dragStartIndex, setDragStartIndex] = useState(null);
+  const [dragCurrentIndex, setDragCurrentIndex] = useState(null);
+  const [didExceedDragThreshold, setDidExceedDragThreshold] = useState(false);
+  const [dragTargetDeleted, setDragTargetDeleted] = useState(true);
   const mediaRef = useRef();
   const boundedPlaybackRef = useRef(null);
   const skipGuardRef = useRef({ targetMs: -1, untilMs: 0 });
+  const wordsRef = useRef(words);
+  const dragStateRef = useRef({
+    isDraggingSelection: false,
+    dragStartIndex: null,
+    dragCurrentIndex: null,
+    didExceedDragThreshold: false,
+    dragTargetDeleted: true,
+  });
+  const dragStartPointRef = useRef({ clientX: 0, clientY: 0 });
+  const mouseDownWordRef = useRef(null);
+  const dragCleanupRef = useRef({ handleMouseMove: null, handleMouseUp: null });
 
   const deletedSegments = mergeSegments([
     ...words
@@ -127,6 +154,7 @@ export default function TranscriptEditor({ session, draft, videoUrl, mediaType, 
   const nextDeletedSegment = findNextSegment(deletedSegments, currentMs);
   const currentEstimatedMs = getEstimatedReviewMs(deletedSegments, currentMs);
   const occurrenceMeta = buildOccurrenceMeta(words);
+  const dragPreviewRange = getPreviewRange(dragStartIndex, dragCurrentIndex);
   const deletedCount = words.filter((w) => w.deleted).length + manualCuts.length;
   const fillerCount = words.filter((w) => w.is_filler && !w.deleted).length;
   const pauseCount = words.filter((w) => w.kind === "pause" && !w.deleted).length;
@@ -172,6 +200,98 @@ export default function TranscriptEditor({ session, draft, videoUrl, mediaType, 
       }, Math.max(100, boundedEnd - boundedStart)),
     };
   }, [seekWithGuard, session.duration_ms, stopBoundedPlayback]);
+
+  useEffect(() => {
+    dragStateRef.current = {
+      isDraggingSelection,
+      dragStartIndex,
+      dragCurrentIndex,
+      didExceedDragThreshold,
+      dragTargetDeleted,
+    };
+  }, [didExceedDragThreshold, dragCurrentIndex, dragStartIndex, dragTargetDeleted, isDraggingSelection]);
+
+  useEffect(() => {
+    wordsRef.current = words;
+  }, [words]);
+
+  const clearDragSelection = useCallback(() => {
+    setIsDraggingSelection(false);
+    setDragStartIndex(null);
+    setDragCurrentIndex(null);
+    setDidExceedDragThreshold(false);
+    setDragTargetDeleted(true);
+    mouseDownWordRef.current = null;
+    document.body.classList.remove("transcript-dragging");
+    dragStateRef.current = {
+      isDraggingSelection: false,
+      dragStartIndex: null,
+      dragCurrentIndex: null,
+      didExceedDragThreshold: false,
+      dragTargetDeleted: true,
+    };
+  }, []);
+
+  const removeDragListeners = useCallback(() => {
+    if (dragCleanupRef.current.handleMouseMove) {
+      document.removeEventListener("mousemove", dragCleanupRef.current.handleMouseMove);
+    }
+    if (dragCleanupRef.current.handleMouseUp) {
+      document.removeEventListener("mouseup", dragCleanupRef.current.handleMouseUp);
+    }
+    dragCleanupRef.current = { handleMouseMove: null, handleMouseUp: null };
+  }, []);
+
+  const getDragDistance = useCallback((clientX, clientY) => {
+    const dx = clientX - dragStartPointRef.current.clientX;
+    const dy = clientY - dragStartPointRef.current.clientY;
+    return Math.hypot(dx, dy);
+  }, []);
+
+  const resolveTokenIndexFromPoint = useCallback((clientX, clientY) => {
+    const element = document.elementFromPoint(clientX, clientY);
+    const tokenElement = element?.closest?.("[data-token-index]");
+    if (!tokenElement) {
+      return null;
+    }
+    const parsedIndex = Number(tokenElement.dataset.tokenIndex);
+    return Number.isNaN(parsedIndex) ? null : parsedIndex;
+  }, []);
+
+  const buildReviewSegment = useCallback((item) => ({
+    id: item.id?.toString?.().startsWith("manual-") ? item.id : `word-${item.id}`,
+    start_ms: item.start_ms,
+    end_ms: item.end_ms,
+    label: item.word || item.label,
+    source: item.kind || item.source || "word",
+  }), []);
+
+  const applyDeletedStateRange = useCallback((startIndex, endIndex, nextDeleted) => {
+    const previewRange = getPreviewRange(startIndex, endIndex);
+    if (!previewRange) {
+      return;
+    }
+
+    setWords((prev) =>
+      prev.map((word, index) => (
+        index >= previewRange.start && index <= previewRange.end
+          ? { ...word, deleted: nextDeleted }
+          : word
+      ))
+    );
+
+    const targetWord = wordsRef.current[previewRange.end] ?? wordsRef.current[previewRange.start];
+    if (targetWord) {
+      setSelectedWordId(targetWord.id);
+      if (nextDeleted) {
+        setSelectedReviewSegment(buildReviewSegment(targetWord));
+      } else {
+        setSelectedReviewSegment((prev) => (
+          prev?.id === `word-${targetWord.id}` ? null : prev
+        ));
+      }
+    }
+  }, [buildReviewSegment]);
 
   const handlePotentialSkip = useCallback((timeMs) => {
     if (!reviewMode || !deletedSegments.length) {
@@ -279,13 +399,10 @@ export default function TranscriptEditor({ session, draft, videoUrl, mediaType, 
     }
   }, [deletedSegments, selectedReviewSegment]);
 
-  const buildReviewSegment = useCallback((item) => ({
-    id: item.id?.toString?.().startsWith("manual-") ? item.id : `word-${item.id}`,
-    start_ms: item.start_ms,
-    end_ms: item.end_ms,
-    label: item.word || item.label,
-    source: item.kind || item.source || "word",
-  }), []);
+  useEffect(() => () => {
+    removeDragListeners();
+    clearDragSelection();
+  }, [clearDragSelection, removeDragListeners]);
 
   const setWordDeleted = useCallback((word, nextDeleted) => {
     setWords((prev) =>
@@ -342,7 +459,7 @@ export default function TranscriptEditor({ session, draft, videoUrl, mediaType, 
     onExport(deleted);
   };
 
-  const clickWord = (word, shouldAutoplay = true) => {
+  const clickWord = useCallback((word, shouldAutoplay = true) => {
     const media = mediaRef.current;
     if (!media) return;
 
@@ -359,7 +476,90 @@ export default function TranscriptEditor({ session, draft, videoUrl, mediaType, 
     if (shouldAutoplay) {
       media.play();
     }
-  };
+  }, [buildReviewSegment, deletedSegments, reviewMode, seekWithGuard]);
+
+  const handleTokenMouseDown = useCallback((event, word, index) => {
+    if (event.button !== 0) {
+      return;
+    }
+    if (event.target?.closest?.(".chip-cut-toggle")) {
+      return;
+    }
+    event.preventDefault();
+    removeDragListeners();
+
+    dragStartPointRef.current = {
+      clientX: event.clientX,
+      clientY: event.clientY,
+    };
+    mouseDownWordRef.current = word;
+    const nextDeleted = !word.deleted;
+    setIsDraggingSelection(true);
+    setDragStartIndex(index);
+    setDragCurrentIndex(index);
+    setDidExceedDragThreshold(false);
+    setDragTargetDeleted(nextDeleted);
+    dragStateRef.current = {
+      isDraggingSelection: true,
+      dragStartIndex: index,
+      dragCurrentIndex: index,
+      didExceedDragThreshold: false,
+      dragTargetDeleted: nextDeleted,
+    };
+
+    const handleMouseMove = (moveEvent) => {
+      const nextIndex = resolveTokenIndexFromPoint(moveEvent.clientX, moveEvent.clientY);
+      const currentDragState = dragStateRef.current;
+      if (!currentDragState.isDraggingSelection) {
+        return;
+      }
+
+      if (!currentDragState.didExceedDragThreshold) {
+        const distance = getDragDistance(moveEvent.clientX, moveEvent.clientY);
+        if (distance >= DRAG_SELECTION_THRESHOLD_PX) {
+          setDidExceedDragThreshold(true);
+          document.body.classList.add("transcript-dragging");
+          dragStateRef.current = {
+            ...dragStateRef.current,
+            didExceedDragThreshold: true,
+          };
+        }
+      }
+
+      if (nextIndex != null) {
+        setDragCurrentIndex(nextIndex);
+        dragStateRef.current = {
+          ...dragStateRef.current,
+          dragCurrentIndex: nextIndex,
+        };
+      }
+    };
+
+    const handleMouseUp = () => {
+      const currentDragState = dragStateRef.current;
+      const clickedWord = mouseDownWordRef.current;
+      removeDragListeners();
+
+      if (!currentDragState.didExceedDragThreshold) {
+        clearDragSelection();
+        if (clickedWord) {
+          clickWord(clickedWord);
+        }
+        return;
+      }
+
+      applyDeletedStateRange(
+        currentDragState.dragStartIndex,
+        currentDragState.dragCurrentIndex,
+        currentDragState.dragTargetDeleted
+      );
+      clearDragSelection();
+    };
+
+    dragCleanupRef.current = { handleMouseMove, handleMouseUp };
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+  }, [applyDeletedStateRange, clearDragSelection, clickWord, getDragDistance, removeDragListeners, resolveTokenIndexFromPoint]);
 
   const clampManualRange = (nextStart, nextEnd) => {
     const start = Math.max(0, Math.min(nextStart, session.duration_ms));
@@ -662,11 +862,14 @@ export default function TranscriptEditor({ session, draft, videoUrl, mediaType, 
           <span className="transcript-hint">Click text to preview · use cut to remove · times show original vs preview</span>
         </div>
         <div className="transcript">
-          {words.map((w) => {
+          {words.map((w, index) => {
             const isSelected = selectedWordId === w.id;
             const occurrence = occurrenceMeta[w.id] ?? { count: 1, index: 1 };
             const isRepeated = occurrence.count > 1;
             const showMeta = isSelected || w.deleted;
+            const isDragPreviewed = Boolean(
+              dragPreviewRange && dragPreviewRange.start <= index && index <= dragPreviewRange.end
+            );
             const classes = [
               "chip",
               w.deleted
@@ -678,6 +881,9 @@ export default function TranscriptEditor({ session, draft, videoUrl, mediaType, 
                 : w.is_filler
                 ? "chip-filler"
                 : "chip-normal",
+              isDragPreviewed
+                ? (dragTargetDeleted ? "chip-drag-cut-preview" : "chip-drag-keep-preview")
+                : "",
               isSelected ? "chip-selected" : "",
             ]
               .filter(Boolean)
@@ -689,12 +895,14 @@ export default function TranscriptEditor({ session, draft, videoUrl, mediaType, 
                 key={w.id}
                 className={classes}
                 title={originalPreviewTitle}
+                data-token-index={index}
+                onMouseDown={(event) => handleTokenMouseDown(event, w, index)}
+                onDragStart={(event) => event.preventDefault()}
               >
                 <span className="chip-row">
                   <button
                     type="button"
                     className="chip-main-button"
-                    onClick={() => clickWord(w)}
                   >
                     {w.deleted ? <s>{w.word}</s> : w.word}
                   </button>

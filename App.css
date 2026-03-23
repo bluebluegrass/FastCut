@@ -543,6 +543,15 @@ body {
   overflow-y: auto;
 }
 
+body.transcript-dragging,
+body.transcript-dragging * {
+  user-select: none;
+}
+
+body.transcript-dragging {
+  cursor: grabbing;
+}
+
 /* Word chips */
 .chip {
   display: inline-flex;
@@ -599,6 +608,22 @@ body {
   transform: translateY(-1px);
   border-color: #ffd166 !important;
   box-shadow: 0 0 0 1px rgba(255, 209, 102, 0.2);
+}
+.chip-drag-cut-preview {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px rgba(232, 255, 71, 0.5);
+}
+.chip-drag-cut-preview.chip-deleted {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px rgba(232, 255, 71, 0.7);
+}
+.chip-drag-keep-preview {
+  border-color: #67e8f9 !important;
+  box-shadow: 0 0 0 2px rgba(103, 232, 249, 0.45);
+}
+.chip-drag-keep-preview.chip-deleted {
+  border-color: #67e8f9 !important;
+  box-shadow: 0 0 0 2px rgba(103, 232, 249, 0.65);
 }
 .chip-row {
   display: inline-flex;
