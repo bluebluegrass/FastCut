@@ -59,10 +59,6 @@ function getEstimatedReviewMs(segments, timeMs) {
   return Math.max(0, timeMs - getDeletedMsBefore(segments, timeMs));
 }
 
-function getWordKey(word) {
-  return word.trim().toLowerCase();
-}
-
 function getPreviewRange(startIndex, currentIndex) {
   if (startIndex == null || currentIndex == null) {
     return null;
@@ -73,23 +69,44 @@ function getPreviewRange(startIndex, currentIndex) {
   };
 }
 
-function buildOccurrenceMeta(words) {
-  const totals = words.reduce((acc, word) => {
-    const key = getWordKey(word.word);
-    acc[key] = (acc[key] || 0) + 1;
-    return acc;
-  }, {});
+function buildSentenceBlocks(words) {
+  const blocks = [];
+  let currentBlock = [];
 
-  const seen = {};
-  return words.reduce((acc, word) => {
-    const key = getWordKey(word.word);
-    seen[key] = (seen[key] || 0) + 1;
-    acc[word.id] = {
-      count: totals[key],
-      index: seen[key],
-    };
-    return acc;
-  }, {});
+  const pushCurrentBlock = () => {
+    if (currentBlock.length) {
+      blocks.push(currentBlock);
+      currentBlock = [];
+    }
+  };
+
+  words.forEach((word, index) => {
+    const prevWord = words[index - 1];
+    const startsOwnBlock = word.kind === "pause" || word.kind === "audio_filler";
+    const endsPrevBlock =
+      prevWord &&
+      (
+        prevWord.kind === "pause" ||
+        prevWord.kind === "audio_filler" ||
+        /[。！？!?…]$/.test(prevWord.word) ||
+        word.start_ms - prevWord.end_ms >= 650
+      );
+
+    if (startsOwnBlock) {
+      pushCurrentBlock();
+      blocks.push([word]);
+      return;
+    }
+
+    if (endsPrevBlock) {
+      pushCurrentBlock();
+    }
+
+    currentBlock.push(word);
+  });
+
+  pushCurrentBlock();
+  return blocks;
 }
 
 export default function TranscriptEditor({ session, draft, videoUrl, mediaType, onDraftChange, onExport }) {
@@ -153,8 +170,12 @@ export default function TranscriptEditor({ session, draft, videoUrl, mediaType, 
 
   const nextDeletedSegment = findNextSegment(deletedSegments, currentMs);
   const currentEstimatedMs = getEstimatedReviewMs(deletedSegments, currentMs);
-  const occurrenceMeta = buildOccurrenceMeta(words);
   const dragPreviewRange = getPreviewRange(dragStartIndex, dragCurrentIndex);
+  const wordIndexById = words.reduce((acc, word, index) => {
+    acc[word.id] = index;
+    return acc;
+  }, {});
+  const sentenceBlocks = buildSentenceBlocks(words);
   const deletedCount = words.filter((w) => w.deleted).length + manualCuts.length;
   const fillerCount = words.filter((w) => w.is_filler && !w.deleted).length;
   const pauseCount = words.filter((w) => w.kind === "pause" && !w.deleted).length;
@@ -859,76 +880,70 @@ export default function TranscriptEditor({ session, draft, videoUrl, mediaType, 
       <div className="editor-right">
         <div className="transcript-header">
           <span>Transcript</span>
-          <span className="transcript-hint">Click text to preview · use cut to remove · times show original vs preview</span>
+          <span className="transcript-hint">Click text to preview · drag across text to remove or restore</span>
         </div>
         <div className="transcript">
-          {words.map((w, index) => {
-            const isSelected = selectedWordId === w.id;
-            const occurrence = occurrenceMeta[w.id] ?? { count: 1, index: 1 };
-            const isRepeated = occurrence.count > 1;
-            const showMeta = isSelected || w.deleted;
-            const isDragPreviewed = Boolean(
-              dragPreviewRange && dragPreviewRange.start <= index && index <= dragPreviewRange.end
-            );
-            const classes = [
-              "chip",
-              w.deleted
-                ? "chip-deleted"
-                : w.kind === "audio_filler"
-                ? "chip-audio-filler"
-                : w.kind === "pause"
-                ? "chip-pause"
-                : w.is_filler
-                ? "chip-filler"
-                : "chip-normal",
-              isDragPreviewed
-                ? (dragTargetDeleted ? "chip-drag-cut-preview" : "chip-drag-keep-preview")
-                : "",
-              isSelected ? "chip-selected" : "",
-            ]
-              .filter(Boolean)
-              .join(" ");
-            const originalPreviewTitle = `Original ${msToTime(w.start_ms)} → ${msToTime(w.end_ms)}\nPreview ${msToTime(getEstimatedReviewMs(deletedSegments, w.start_ms))} → ${msToTime(getEstimatedReviewMs(deletedSegments, w.end_ms))}`;
+          {sentenceBlocks.map((block, blockIndex) => (
+            <div
+              key={`block-${blockIndex}-${block[0]?.id ?? blockIndex}`}
+              className={`transcript-block ${block.some((item) => item.deleted) ? "transcript-block-has-cut" : ""}`}
+            >
+              {block.map((w) => {
+                const index = wordIndexById[w.id];
+                const isSelected = selectedWordId === w.id;
+                const isDragPreviewed = Boolean(
+                  dragPreviewRange && dragPreviewRange.start <= index && index <= dragPreviewRange.end
+                );
+                const classes = [
+                  "chip",
+                  w.deleted
+                    ? "chip-deleted"
+                    : w.kind === "audio_filler"
+                    ? "chip-audio-filler"
+                    : w.kind === "pause"
+                    ? "chip-pause"
+                    : w.is_filler
+                    ? "chip-filler"
+                    : "chip-normal",
+                  isDragPreviewed
+                    ? (dragTargetDeleted ? "chip-drag-cut-preview" : "chip-drag-keep-preview")
+                    : "",
+                  isSelected ? "chip-selected" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ");
+                const originalPreviewTitle = `Original ${msToTime(w.start_ms)} → ${msToTime(w.end_ms)}\nPreview ${msToTime(getEstimatedReviewMs(deletedSegments, w.start_ms))} → ${msToTime(getEstimatedReviewMs(deletedSegments, w.end_ms))}`;
 
-            return (
-              <span
-                key={w.id}
-                className={classes}
-                title={originalPreviewTitle}
-                data-token-index={index}
-                onMouseDown={(event) => handleTokenMouseDown(event, w, index)}
-                onDragStart={(event) => event.preventDefault()}
-              >
-                <span className="chip-row">
-                  <button
-                    type="button"
-                    className="chip-main-button"
+                return (
+                  <span
+                    key={w.id}
+                    className={classes}
+                    title={originalPreviewTitle}
+                    data-token-index={index}
+                    onMouseDown={(event) => handleTokenMouseDown(event, w, index)}
+                    onDragStart={(event) => event.preventDefault()}
                   >
-                    {w.deleted ? <s>{w.word}</s> : w.word}
-                  </button>
-                  {isRepeated && (
-                    <span className="chip-occurrence" aria-hidden="true">
-                      #{occurrence.index}
+                    <span className="chip-row">
+                      <button
+                        type="button"
+                        className="chip-main-button"
+                      >
+                        {w.deleted ? <s>{w.word}</s> : w.word}
+                      </button>
+                      <button
+                        type="button"
+                        className={`chip-cut-toggle ${w.deleted ? "chip-cut-toggle-active" : ""}`}
+                        onClick={() => setWordDeleted(w, !w.deleted)}
+                        aria-label={w.deleted ? `Keep ${w.word}` : `Cut ${w.word}`}
+                      >
+                        {w.deleted ? "留" : "删"}
+                      </button>
                     </span>
-                  )}
-                  <button
-                    type="button"
-                    className={`chip-cut-toggle ${w.deleted ? "chip-cut-toggle-active" : ""}`}
-                    onClick={() => setWordDeleted(w, !w.deleted)}
-                    aria-label={w.deleted ? `Keep ${w.word}` : `Cut ${w.word}`}
-                  >
-                    {w.deleted ? "keep" : "cut"}
-                  </button>
-                </span>
-                {showMeta && (
-                  <span className="chip-meta">
-                    <span>orig {msToTime(w.start_ms)}</span>
-                    <span>prev {msToTime(getEstimatedReviewMs(deletedSegments, w.start_ms))}</span>
                   </span>
-                )}
-              </span>
-            );
-          })}
+                );
+              })}
+            </div>
+          ))}
         </div>
       </div>
     </div>
