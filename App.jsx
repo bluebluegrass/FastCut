@@ -156,7 +156,7 @@ export default function App() {
     <div className="app">
       <header className="header">
         <div className="logo">✂️ FastCut</div>
-        <div className="tagline">Video transcript editor — cut filler words instantly</div>
+        <div className="tagline">Shape the final cut by editing the transcript.</div>
       </header>
 
       {error && (
@@ -182,8 +182,8 @@ export default function App() {
             ) : (
               <>
                 <div className="drop-icon">🎬</div>
-                <div className="drop-text">Drop your video or audio here</div>
-                <div className="drop-sub">or click to browse — MP4, MOV, AVI, MKV, M4A, MP3, WAV</div>
+                <div className="drop-text">Drop in a file to start editing</div>
+                <div className="drop-sub">or click to browse · MP4, MOV, AVI, MKV, M4A, MP3, WAV</div>
               </>
             )}
           </div>
@@ -205,7 +205,7 @@ export default function App() {
           )}
           {videoFile && (
             <button className="btn-primary" onClick={handleTranscribe}>
-              🎙️ Transcribe with Whisper
+              🎙️ Generate transcript
             </button>
           )}
         </div>
@@ -214,8 +214,10 @@ export default function App() {
       {stage === "transcribing" && (
         <div className="loading-section">
           <div className="spinner" />
-          <div className="loading-text">Transcribing with OpenAI Whisper…</div>
-          <div className="loading-sub">This may take a minute for longer videos</div>
+          <div className="loading-text">Generating your transcript…</div>
+          <div className="loading-sub">
+            Hang tight while we process your file. The timing depends on file size, speaking length, and current server load.
+          </div>
         </div>
       )}
 
@@ -236,15 +238,15 @@ export default function App() {
       {stage === "exporting" && (
         <div className="loading-section">
           <div className="spinner" />
-          <div className="loading-text">Cutting video with ffmpeg…</div>
-          <div className="loading-sub">Removing deleted segments and re-encoding</div>
+          <div className="loading-text">Exporting your edit…</div>
+          <div className="loading-sub">Rendering your final file</div>
         </div>
       )}
 
       {stage === "done" && exportUrl && (
         <div className="done-section">
           <div className="done-icon">✅</div>
-          <div className="done-title">Your edited video is ready!</div>
+          <div className="done-title">Your edited file is ready.</div>
           {mediaType === "audio" ? (
             <audio src={exportUrl} controls className="done-preview-audio" />
           ) : (
@@ -252,13 +254,13 @@ export default function App() {
           )}
           <div className="done-actions">
             <a href={exportUrl} download={mediaType === "audio" ? "edited_audio.m4a" : "edited_video.mp4"} className="btn-primary">
-              ⬇️ Download Edited {mediaType === "audio" ? "Audio" : "Video"}
+              ⬇️ Download {mediaType === "audio" ? "edited audio" : "edited video"}
             </a>
             <button className="btn-secondary" onClick={backToEditing}>
-              Back to editing
+              Back to transcript
             </button>
             <button className="btn-secondary" onClick={reset}>
-              Start Over
+              Start over
             </button>
           </div>
         </div>

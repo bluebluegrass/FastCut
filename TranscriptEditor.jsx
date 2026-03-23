@@ -4,6 +4,11 @@ const REVIEW_EDGE_WINDOW_MS = 700;
 const REVIEW_POLL_MS = 40;
 const REVIEW_SEEK_GUARD_MS = 160;
 const DRAG_SELECTION_THRESHOLD_PX = 5;
+const SHORTCUTS = {
+  cut: { key: "d", label: "D" },
+  restore: { key: "f", label: "F" },
+  playPause: { key: "space", label: "Space" },
+};
 const SHORT_PAUSE_THRESHOLD_MS = 700;
 const DERIVED_PAUSE_THRESHOLD_MS = 1400;
 
@@ -84,11 +89,15 @@ function buildSentenceBlocks(words) {
 
   words.forEach((word, index) => {
     const prevWord = words[index - 1];
-    const startsOwnBlock = word.kind === "pause" || word.kind === "audio_filler";
+    const startsOwnBlock =
+      word.kind === "pause" ||
+      word.kind === "short_pause" ||
+      word.kind === "audio_filler";
     const endsPrevBlock =
       prevWord &&
       (
         prevWord.kind === "pause" ||
+        prevWord.kind === "short_pause" ||
         prevWord.kind === "audio_filler" ||
         /[。！？!?…]$/.test(prevWord.word) ||
         word.start_ms - prevWord.end_ms >= 650
@@ -168,6 +177,35 @@ function formatInlineTokenLabel(word) {
   }
 
   return word.word;
+}
+
+function getBlockTrailingPunctuation(block, nextBlock) {
+  if (!block.length) {
+    return "";
+  }
+
+  const lastWord = block[block.length - 1];
+  if (lastWord.kind === "pause" || lastWord.kind === "short_pause" || lastWord.kind === "audio_filler") {
+    return "";
+  }
+
+  const lastLabel = formatInlineTokenLabel(lastWord);
+  if (/[。！？!?…]$/.test(lastLabel)) {
+    return "";
+  }
+
+  const nextFirstWord = nextBlock?.[0];
+  if (nextFirstWord?.kind === "short_pause" || nextFirstWord?.kind === "audio_filler") {
+    return "，";
+  }
+  if (nextFirstWord?.kind === "pause") {
+    return "。";
+  }
+  if (!nextFirstWord) {
+    return "。";
+  }
+
+  return "。";
 }
 
 export default function TranscriptEditor({ session, draft, videoUrl, previewUrl, previewLoading, mediaType, onDraftChange, onPreview, onExport }) {
@@ -544,7 +582,7 @@ export default function TranscriptEditor({ session, draft, videoUrl, previewUrl,
     }
 
     const media = mediaRef.current;
-    if ((event.key === " " || event.code === "Space") && media) {
+    if ((event.key === " " || event.code === "Space" || event.key.toLowerCase() === SHORTCUTS.playPause.key) && media) {
       event.preventDefault();
       if (media.paused) {
         media.play();
@@ -558,13 +596,13 @@ export default function TranscriptEditor({ session, draft, videoUrl, previewUrl,
       return;
     }
 
-    if (event.key === "Delete" || event.key === "Backspace") {
+    if (event.key.toLowerCase() === SHORTCUTS.cut.key && !event.metaKey && !event.ctrlKey && !event.altKey) {
       event.preventDefault();
       applyDeletedStateRange(selectedRange.start, selectedRange.end, true);
       return;
     }
 
-    if (event.key.toLowerCase() === "r" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    if (event.key.toLowerCase() === SHORTCUTS.restore.key && !event.metaKey && !event.ctrlKey && !event.altKey) {
       event.preventDefault();
       applyDeletedStateRange(selectedRange.start, selectedRange.end, false);
     }
@@ -609,7 +647,7 @@ export default function TranscriptEditor({ session, draft, videoUrl, previewUrl,
       })),
     ];
     if (deleted.length === 0) {
-      alert("No words marked for deletion.");
+      alert("Select something to remove first.");
       return;
     }
     onExport(deleted);
@@ -777,7 +815,7 @@ export default function TranscriptEditor({ session, draft, videoUrl, previewUrl,
       })),
     ];
     if (deleted.length === 0) {
-      alert("No words marked for deletion.");
+      alert("Select something to remove first.");
       return;
     }
 
@@ -835,31 +873,31 @@ export default function TranscriptEditor({ session, draft, videoUrl, previewUrl,
 
         <div className={`review-panel ${reviewMode ? "review-panel-active" : ""}`}>
           <div className="review-header">
-            <span className="review-title">Preview your edit</span>
+            <span className="review-title">Preview</span>
           </div>
           <div className="review-summary">
             <div className="review-summary-stat">
               <span className="review-summary-value">{deletedCount}</span>
-              <span className="review-summary-label">parts removed</span>
+              <span className="review-summary-label">cuts marked</span>
             </div>
             <div className="review-summary-stat">
               <span className="review-summary-value">{(deletedMs / 1000).toFixed(1)}s</span>
-              <span className="review-summary-label">time saved</span>
+              <span className="review-summary-label">time trimmed</span>
             </div>
           </div>
           <div className="review-status">
             {previewLoading
-              ? "Rendering the edited preview…"
+              ? "Preparing your preview…"
               : reviewMode
               ? "Previewing the edited version"
-              : "Previewing the original version"}
+              : "Previewing the original file"}
           </div>
           <div className="review-actions">
             <button
               onClick={startEditedPreview}
               disabled={previewLoading}
             >
-              {previewLoading ? "Preparing preview..." : "Play edited version"}
+              {previewLoading ? "Preparing preview..." : "Play edited cut"}
             </button>
             {reviewMode && (
               <button
@@ -872,7 +910,7 @@ export default function TranscriptEditor({ session, draft, videoUrl, previewUrl,
                   }
                 }}
               >
-                Back to original
+                Play original
               </button>
             )}
           </div>
@@ -884,18 +922,18 @@ export default function TranscriptEditor({ session, draft, videoUrl, previewUrl,
           open={advancedReviewOpen}
           onToggle={(event) => setAdvancedReviewOpen(event.currentTarget.open)}
         >
-          <summary className="review-collapse-summary">Advanced review</summary>
+          <summary className="review-collapse-summary">Cut details</summary>
           <div className="review-times">
-            <span>Original: {msToTime(currentMs)}</span>
-            <span>Preview/export: {msToTime(currentEstimatedMs)}</span>
+            <span>Original timeline · {msToTime(currentMs)}</span>
+            <span>Edited timeline · {msToTime(currentEstimatedMs)}</span>
           </div>
           <div className="review-actions">
             <button onClick={() => replaySegmentEdge(lastSkippedSegment)} disabled={!lastSkippedSegment}>
-              Check last cut
+              Replay last cut
             </button>
           </div>
           <div className="review-next">
-            <span className="review-next-label">Next removed part</span>
+            <span className="review-next-label">Next cut in timeline</span>
             {nextDeletedSegment ? (
               <button
                 className="review-next-card"
@@ -908,36 +946,36 @@ export default function TranscriptEditor({ session, draft, videoUrl, previewUrl,
                 <strong>{nextDeletedSegment.label}</strong>
               </button>
             ) : (
-              <div className="review-next-empty">No removed part after the current playhead</div>
+              <div className="review-next-empty">No more cuts after the current playhead</div>
             )}
           </div>
           <div className="stats stats-compact">
             <div className="stat">
               <span className="stat-val">{words.length}</span>
-              <span className="stat-label">Transcript segments</span>
+              <span className="stat-label">Transcript pieces</span>
             </div>
             <div className="stat stat-filler">
               <span className="stat-val">{fillerCount}</span>
-              <span className="stat-label">Fillers left</span>
+              <span className="stat-label">Filler words left</span>
             </div>
             <div className="stat stat-audio-filler">
               <span className="stat-val">{audioFillerCount}</span>
-              <span className="stat-label">Thinking sounds</span>
+              <span className="stat-label">Thinking sounds left</span>
             </div>
             <div className="stat stat-pause">
               <span className="stat-val">{pauseCount}</span>
-              <span className="stat-label">Long pauses</span>
+              <span className="stat-label">Long pauses left</span>
             </div>
           </div>
           {selectedReviewSegment && (
             <div className="review-detail-card">
-              <div className="review-title">Cut detail</div>
+              <div className="review-title">Selected cut</div>
               <div className="review-segment-time">
                 {msToTime(selectedReviewSegment.start_ms)} → {msToTime(selectedReviewSegment.end_ms)}
               </div>
               <div className="review-times">
                 <span>
-                  Est. preview: {msToTime(getEstimatedReviewMs(deletedSegments, selectedReviewSegment.start_ms))} →
+                  Edited timeline · {msToTime(getEstimatedReviewMs(deletedSegments, selectedReviewSegment.start_ms))} →
                   {" "}
                   {msToTime(getEstimatedReviewMs(deletedSegments, selectedReviewSegment.end_ms))}
                 </span>
@@ -956,30 +994,30 @@ export default function TranscriptEditor({ session, draft, videoUrl, previewUrl,
           open={advancedToolsOpen}
           onToggle={(event) => setAdvancedToolsOpen(event.currentTarget.open)}
         >
-          <summary className="review-collapse-summary">Advanced tools</summary>
+          <summary className="review-collapse-summary">Editing tools</summary>
           <div className="toolbar">
             <button className="btn-filler" onClick={markAllFillers}>
-              🤖 Auto-mark fillers + sounds + pauses
+              ✨ Mark filler words, thinking sounds, and pauses
             </button>
             <button className="btn-clear" onClick={clearAll}>
-              ↩ Clear all
+              Reset all cuts
             </button>
           </div>
 
           <div className="search-bar">
             <input
               type="text"
-              placeholder="Search & delete words…"
+              placeholder="Find words to cut…"
               value={searchText}
               onChange={(e) => setSearchText(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && findAndDelete()}
             />
-            <button onClick={findAndDelete}>Delete all matches</button>
+            <button onClick={findAndDelete}>Cut matches</button>
           </div>
 
           <div className="manual-cut-panel">
-            <div className="manual-cut-header">Manual time cut</div>
-            <div className="manual-cut-now">Current playhead: {msToTime(currentMs)}</div>
+            <div className="manual-cut-header">Cut by time</div>
+            <div className="manual-cut-now">Playhead · {msToTime(currentMs)}</div>
             <div className="manual-cut-actions">
               <button onClick={setCurrentAsStart}>Set start from playhead</button>
               <button onClick={setCurrentAsEnd}>Set end from playhead</button>
@@ -1017,7 +1055,7 @@ export default function TranscriptEditor({ session, draft, videoUrl, previewUrl,
               </label>
             </div>
             <button className="btn-manual-cut" onClick={addManualCut}>
-              Add manual cut {msToTime(manualStartMs)} - {msToTime(manualEndMs)}
+              Add cut {msToTime(manualStartMs)} - {msToTime(manualEndMs)}
             </button>
             {manualCuts.length > 0 && (
               <div className="manual-cut-list">
@@ -1047,28 +1085,59 @@ export default function TranscriptEditor({ session, draft, videoUrl, previewUrl,
             <span className="chip chip-normal">word</span> = keep
           </span>
           <span className="legend-item">
-            <span className="chip chip-filler">嗯</span> = auto-filler
+            <span className="chip chip-filler">嗯</span> = filler
           </span>
           <span className="legend-item">
-            <span className="chip chip-audio-filler">audio</span> = detected filler sound
+            <span className="chip chip-audio-filler">audio</span> = thinking sound
           </span>
           <span className="legend-item">
-            <span className="chip chip-pause">pause</span> = pause over 2s
+            <span className="chip chip-pause">pause</span> = pause
           </span>
           <span className="legend-item">
-            <span className="chip chip-deleted">cut</span> = will be cut
+            <span className="chip chip-deleted">cut</span> = removed in export
           </span>
         </div>
-
-        <button className="btn-export" onClick={handleExport} disabled={deletedCount === 0}>
-          ✂️ Export — cut {deletedCount} segment{deletedCount !== 1 ? "s" : ""}
-        </button>
       </div>
 
       <div className="editor-right">
         <div className="transcript-header">
           <span>Transcript</span>
-          <span className="transcript-hint">Click to preview · drag to select · Delete to strike out · R to restore</span>
+          <div className="transcript-header-actions">
+            <details className="shortcuts-popover">
+              <summary className="shortcuts-button">Shortcuts</summary>
+              <div className="shortcuts-menu">
+                <div className="shortcuts-row">
+                  <span className="shortcuts-label">Seek</span>
+                  <span className="shortcuts-copy">Click a word</span>
+                </div>
+                <div className="shortcuts-row">
+                  <span className="shortcuts-label">Select</span>
+                  <span className="shortcuts-copy">Drag across words</span>
+                </div>
+                <div className="shortcuts-row">
+                  <span className="shortcuts-label">Cut</span>
+                  <span className="shortcuts-keys">
+                    <kbd className="keycap">{SHORTCUTS.cut.label}</kbd>
+                  </span>
+                </div>
+                <div className="shortcuts-row">
+                  <span className="shortcuts-label">Restore</span>
+                  <span className="shortcuts-keys">
+                    <kbd className="keycap">{SHORTCUTS.restore.label}</kbd>
+                  </span>
+                </div>
+                <div className="shortcuts-row">
+                  <span className="shortcuts-label">Play / Pause</span>
+                  <span className="shortcuts-keys">
+                    <kbd className="keycap keycap-wide">{SHORTCUTS.playPause.label}</kbd>
+                  </span>
+                </div>
+              </div>
+            </details>
+            <button className="btn-export btn-export-inline" onClick={handleExport} disabled={deletedCount === 0}>
+              Export final cut
+            </button>
+          </div>
         </div>
         <div
           ref={transcriptRef}
@@ -1129,6 +1198,11 @@ export default function TranscriptEditor({ session, draft, videoUrl, previewUrl,
                   </span>
                 );
               })}
+              {getBlockTrailingPunctuation(block, sentenceBlocks[blockIndex + 1]) && (
+                <span className="transcript-block-punctuation">
+                  {getBlockTrailingPunctuation(block, sentenceBlocks[blockIndex + 1])}
+                </span>
+              )}
             </div>
           ))}
         </div>
