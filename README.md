@@ -12,6 +12,23 @@ FastCut is designed for spoken content workflows such as:
 
 ---
 
+## Default Setup
+
+FastCut now defaults to a **local-only transcription setup**.
+
+For the standard setup, you do **not** need:
+- an OpenAI API key
+- any other external AI API key
+
+By default FastCut uses:
+- `qwen3_asr_local`
+- `Qwen/Qwen3-ASR-0.6B`
+- `Qwen/Qwen3-ForcedAligner-0.6B`
+
+You only need an API key if you intentionally switch the provider to `openai_whisper_chunked`.
+
+---
+
 ## What FastCut Does
 
 - Generates editable transcript tokens with timestamps
@@ -65,7 +82,7 @@ The current codebase also supports local Qwen ASR + forced alignment settings.
 Example provider-related settings in [`.env.example`](/Users/simona/Downloads/video cutter/.env.example):
 
 ```env
-TRANSCRIPTION_PROVIDER=openai_whisper_chunked
+TRANSCRIPTION_PROVIDER=qwen3_asr_local
 
 LOCAL_WHISPER_MODEL=base
 LOCAL_WHISPER_LANGUAGE=zh
@@ -79,10 +96,14 @@ QWEN_ASR_DTYPE=auto
 QWEN_ASR_MAX_BATCH_SIZE=8
 QWEN_ASR_MAX_NEW_TOKENS=256
 QWEN_ASR_ENABLE_ALIGNER=true
+
+# Optional: only needed if you switch to the OpenAI provider
+# OPENAI_API_KEY=sk-your-real-openai-api-key
 ```
 
 Notes:
-- `openai_whisper_chunked` needs a valid `OPENAI_API_KEY`
+- `qwen3_asr_local` is the default local-only setup and does not require an API key
+- `openai_whisper_chunked` remains available if you want to use the OpenAI API
 - local Qwen / local Whisper may download models on first run
 - ffmpeg must be installed and available in `PATH`
 
@@ -93,10 +114,8 @@ Notes:
 - Python 3.10+
 - Node.js 18+
 - `ffmpeg` installed and available in `PATH`
-
-Depending on your transcription provider, you may also need:
-- an OpenAI API key
 - enough local disk / memory to run local ASR models
+- an OpenAI API key only if you explicitly switch to `openai_whisper_chunked`
 
 ---
 
@@ -120,7 +139,15 @@ npm install
 cp .env.example .env
 ```
 
-Then update the values in [`.env`](/Users/simona/Downloads/video cutter/.env) for your chosen provider.
+Then update the values in [`.env`](/Users/simona/Downloads/video cutter/.env) only if you want to change the default provider.
+
+If you do not want to use any external AI API, keep the default local setup:
+
+```env
+TRANSCRIPTION_PROVIDER=qwen3_asr_local
+QWEN_ASR_MODEL=Qwen/Qwen3-ASR-0.6B
+QWEN_ASR_ALIGNER_MODEL=Qwen/Qwen3-ForcedAligner-0.6B
+```
 
 ---
 
@@ -141,6 +168,8 @@ npm run dev -- --port 4190
 Then open:
 - Frontend: [http://127.0.0.1:4190](http://127.0.0.1:4190)
 - Backend health check: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
+
+On first run with the default local setup, FastCut may spend extra time downloading the Qwen ASR and aligner weights before the first transcription completes.
 
 ---
 

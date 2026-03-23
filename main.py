@@ -55,9 +55,7 @@ FILLER_WORDS = {
     "uh", "um", "erm", "hmm", "ah", "oh", "like", "you know", "so",
 }
 
-client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-
-TRANSCRIPTION_PROVIDER = os.environ.get("TRANSCRIPTION_PROVIDER", "local_whisper")
+TRANSCRIPTION_PROVIDER = os.environ.get("TRANSCRIPTION_PROVIDER", "qwen3_asr_local")
 LOCAL_WHISPER_MODEL = os.environ.get("LOCAL_WHISPER_MODEL", "base")
 LOCAL_WHISPER_LANGUAGE = os.environ.get("LOCAL_WHISPER_LANGUAGE", "zh")
 WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
@@ -114,6 +112,11 @@ VERBATIM_PROMPT = (
     "normalize, clean up, or remove repeated content. Output what was actually "
     "said, even if it sounds redundant or broken."
 )
+
+
+@lru_cache(maxsize=1)
+def get_openai_client():
+    return openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 
 class Word(BaseModel):
@@ -855,7 +858,7 @@ def get_qwen_asr_model():
 
 def transcribe_audio_file_openai(audio_path: Path):
     with open(audio_path, "rb") as audio_file:
-        return client.audio.transcriptions.create(
+        return get_openai_client().audio.transcriptions.create(
             model="whisper-1",
             file=audio_file,
             response_format="verbose_json",
