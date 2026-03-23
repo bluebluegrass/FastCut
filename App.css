@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;800&family=IBM+Plex+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;800&family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@700;800&family=Instrument+Sans:wght@600;700;800&family=Fraunces:opsz,wght@9..144,700&display=swap');
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -34,6 +34,20 @@ body {
   max-width: 1400px;
   margin: 0 auto;
   padding: 24px;
+}
+
+.app-font-fraunces .logo,
+.app-font-fraunces .drop-text,
+.app-font-fraunces .btn-primary,
+.app-font-fraunces .loading-text,
+.app-font-fraunces .done-title,
+.app-font-fraunces .review-title,
+.app-font-fraunces .review-collapse-summary,
+.app-font-fraunces .stat-val,
+.app-font-fraunces .manual-cut-header,
+.app-font-fraunces .btn-export,
+.app-font-fraunces .transcript-header {
+  font-family: 'Fraunces', serif;
 }
 
 /* Header */
@@ -163,7 +177,19 @@ body {
   gap: 20px;
 }
 .done-icon { font-size: 64px; }
-.done-title { font-family: 'Syne', sans-serif; font-size: 24px; font-weight: 700; color: var(--accent); }
+.done-title {
+  font-size: 24px;
+  color: var(--accent);
+  text-align: center;
+}
+.app-font-fraunces .done-title,
+.app-font-fraunces .logo,
+.app-font-fraunces .btn-primary,
+.app-font-fraunces .btn-export {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
 .done-actions { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
 .done-preview-video {
   width: min(100%, 360px);

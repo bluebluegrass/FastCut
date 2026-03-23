@@ -153,7 +153,7 @@ export default function App() {
   };
 
   return (
-    <div className="app">
+    <div className="app app-font-fraunces">
       <header className="header">
         <div className="logo">✂️ FastCut</div>
         <div className="tagline">Shape the final cut by editing the transcript.</div>
@@ -204,9 +204,11 @@ export default function App() {
             </div>
           )}
           {videoFile && (
-            <button className="btn-primary" onClick={handleTranscribe}>
-              🎙️ Generate transcript
-            </button>
+            <>
+              <button className="btn-primary" onClick={handleTranscribe}>
+                🎙️ Generate transcript
+              </button>
+            </>
           )}
         </div>
       )}
@@ -238,8 +240,10 @@ export default function App() {
       {stage === "exporting" && (
         <div className="loading-section">
           <div className="spinner" />
-          <div className="loading-text">Exporting your edit…</div>
-          <div className="loading-sub">Rendering your final file</div>
+          <div className="loading-text">Preparing your final file…</div>
+          <div className="loading-sub">
+            We’re putting your final edit together now. Export time can vary based on file length, edit complexity, and rendering load.
+          </div>
         </div>
       )}
 
