@@ -51,7 +51,7 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 # Filler words to auto-detect (Chinese + common English)
 FILLER_WORDS = {
     "嗯", "额", "啊", "呃", "哦", "噢", "唔", "哎", "哼",
-    "那个", "就是", "然后", "这个", "就", "嘛", "吧", "呢",
+    "那个", "就是", "然后", "这个", "嘛", "吧", "呢",
     "uh", "um", "erm", "hmm", "ah", "oh", "like", "you know", "so",
 }
 
@@ -134,6 +134,120 @@ class TranscriptResponse(BaseModel):
 class ExportRequest(BaseModel):
     video_id: str
     deleted_words: List[Word]
+
+
+def build_keep_segments(
+    req: ExportRequest,
+) -> tuple[dict, Path, Path, int, list[tuple[int, int]]]:
+    transcript_path = UPLOAD_DIR / f"{req.video_id}.json"
+    if not transcript_path.exists():
+        raise HTTPException(status_code=404, detail="Video session not found")
+
+    with open(transcript_path) as f:
+        session = json.load(f)
+
+    video_path = Path(session["video_path"])
+    audio_path = Path(session.get("audio_path", ""))
+    duration_ms = session["duration_ms"]
+    session_words = [Word(**item) for item in session.get("words", [])]
+
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found")
+    if not audio_path.exists():
+        raise HTTPException(status_code=404, detail="Audio file not found")
+
+    deleted = align_deleted_segments_to_silence(req.deleted_words, session_words, audio_path, duration_ms)
+
+    keep_segments: list[tuple[int, int]] = []
+    cursor = 0
+    for start_ms, end_ms in deleted:
+        if cursor < start_ms:
+            keep_segments.append((cursor, start_ms))
+        cursor = end_ms
+    if cursor < duration_ms:
+        keep_segments.append((cursor, duration_ms))
+
+    if not keep_segments:
+        raise HTTPException(status_code=400, detail="Nothing to keep after all deletions")
+
+    return session, video_path, audio_path, duration_ms, keep_segments
+
+
+def render_edited_media(req: ExportRequest, preview: bool = False) -> tuple[Path, str, str]:
+    _, video_path, _, _, keep_segments = build_keep_segments(req)
+    input_has_video = has_video_stream(video_path)
+    output_stem = f"{req.video_id}_{'preview' if preview else 'edited'}"
+
+    if input_has_video:
+        output_path = OUTPUT_DIR / f"{output_stem}.mp4"
+        video_trims = []
+        audio_trims = []
+        for i, (start, end) in enumerate(keep_segments):
+            s = start / 1000.0
+            e = end / 1000.0
+            video_trims.append(f"[0:v]trim=start={s}:end={e},setpts=PTS-STARTPTS[v{i}];")
+            audio_trims.append(f"[0:a]atrim=start={s}:end={e},asetpts=PTS-STARTPTS[a{i}];")
+
+        n = len(keep_segments)
+        v_labels = "".join(f"[v{i}]" for i in range(n))
+        a_labels = "".join(f"[a{i}]" for i in range(n))
+        concat = f"{v_labels}concat=n={n}:v=1:a=0[outv];{a_labels}concat=n={n}:v=0:a=1[outa]"
+        filter_complex = "".join(video_trims) + "".join(audio_trims) + concat
+
+        result = run_ffmpeg_export([
+            [
+                "ffmpeg", "-i", str(video_path),
+                "-filter_complex", filter_complex,
+                "-map", "[outv]", "-map", "[outa]",
+                "-c:v", "h264_videotoolbox",
+                "-b:v", "6M",
+                "-c:a", "aac",
+                "-b:a", EXPORT_AUDIO_BITRATE,
+                str(output_path), "-y",
+            ],
+            [
+                "ffmpeg", "-i", str(video_path),
+                "-filter_complex", filter_complex,
+                "-map", "[outv]", "-map", "[outa]",
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "23",
+                "-c:a", "aac",
+                "-b:a", EXPORT_AUDIO_BITRATE,
+                str(output_path), "-y",
+            ],
+        ])
+        media_type = "video/mp4"
+        filename = f"{output_stem}.mp4"
+    else:
+        output_path = OUTPUT_DIR / f"{output_stem}.m4a"
+        audio_trims = []
+        for i, (start, end) in enumerate(keep_segments):
+            s = start / 1000.0
+            e = end / 1000.0
+            audio_trims.append(f"[0:a]atrim=start={s}:end={e},asetpts=PTS-STARTPTS[a{i}];")
+
+        n = len(keep_segments)
+        a_labels = "".join(f"[a{i}]" for i in range(n))
+        filter_complex = "".join(audio_trims) + f"{a_labels}concat=n={n}:v=0:a=1[outa]"
+
+        result = run_ffmpeg_export([
+            [
+                "ffmpeg", "-i", str(video_path),
+                "-filter_complex", filter_complex,
+                "-map", "[outa]",
+                "-c:a", "aac",
+                "-b:a", EXPORT_AUDIO_BITRATE,
+                str(output_path), "-y",
+            ],
+        ])
+        media_type = "audio/mp4"
+        filename = f"{output_stem}.m4a"
+
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=f"ffmpeg error: {result.stderr}")
+
+    return output_path, media_type, filename
 
 
 def is_filler(word: str) -> bool:
@@ -1463,111 +1577,20 @@ async def transcribe_video(file: UploadFile = File(...)):
 @app.post("/export")
 async def export_video(req: ExportRequest):
     """Cut deleted words from video and return the processed file."""
+    output_path, media_type, filename = render_edited_media(req, preview=False)
 
-    transcript_path = UPLOAD_DIR / f"{req.video_id}.json"
-    if not transcript_path.exists():
-        raise HTTPException(status_code=404, detail="Video session not found")
+    return FileResponse(
+        path=str(output_path),
+        media_type=media_type,
+        filename=filename,
+    )
 
-    with open(transcript_path) as f:
-        session = json.load(f)
 
-    video_path = session["video_path"]
-    audio_path = Path(session.get("audio_path", ""))
-    duration_ms = session["duration_ms"]
-    session_words = [Word(**item) for item in session.get("words", [])]
+@app.post("/preview")
+async def preview_video(req: ExportRequest):
+    """Render an edited preview using the same concat/export path as final export."""
 
-    if not Path(video_path).exists():
-        raise HTTPException(status_code=404, detail="Video file not found")
-    if not audio_path.exists():
-        raise HTTPException(status_code=404, detail="Audio file not found")
-
-    # Build list of segments to DELETE, sorted by start time
-    deleted = align_deleted_segments_to_silence(req.deleted_words, session_words, audio_path, duration_ms)
-
-    # Build list of segments to KEEP (inverse of deleted)
-    keep_segments = []
-    cursor = 0
-    for start_ms, end_ms in deleted:
-        if cursor < start_ms:
-            keep_segments.append((cursor, start_ms))
-        cursor = end_ms
-    if cursor < duration_ms:
-        keep_segments.append((cursor, duration_ms))
-
-    if not keep_segments:
-        raise HTTPException(status_code=400, detail="Nothing to keep after all deletions")
-
-    input_path = Path(video_path)
-    input_has_video = has_video_stream(input_path)
-    if input_has_video:
-        output_path = OUTPUT_DIR / f"{req.video_id}_edited.mp4"
-        video_trims = []
-        audio_trims = []
-        for i, (start, end) in enumerate(keep_segments):
-            s = start / 1000.0
-            e = end / 1000.0
-            video_trims.append(f"[0:v]trim=start={s}:end={e},setpts=PTS-STARTPTS[v{i}];")
-            audio_trims.append(f"[0:a]atrim=start={s}:end={e},asetpts=PTS-STARTPTS[a{i}];")
-
-        n = len(keep_segments)
-        v_labels = "".join(f"[v{i}]" for i in range(n))
-        a_labels = "".join(f"[a{i}]" for i in range(n))
-        concat = f"{v_labels}concat=n={n}:v=1:a=0[outv];{a_labels}concat=n={n}:v=0:a=1[outa]"
-        filter_complex = "".join(video_trims) + "".join(audio_trims) + concat
-
-        result = run_ffmpeg_export([
-            [
-                "ffmpeg", "-i", video_path,
-                "-filter_complex", filter_complex,
-                "-map", "[outv]", "-map", "[outa]",
-                "-c:v", "h264_videotoolbox",
-                "-b:v", "6M",
-                "-c:a", "aac",
-                "-b:a", EXPORT_AUDIO_BITRATE,
-                str(output_path), "-y",
-            ],
-            [
-                "ffmpeg", "-i", video_path,
-                "-filter_complex", filter_complex,
-                "-map", "[outv]", "-map", "[outa]",
-                "-c:v", "libx264",
-                "-preset", "veryfast",
-                "-crf", "23",
-                "-c:a", "aac",
-                "-b:a", EXPORT_AUDIO_BITRATE,
-                str(output_path), "-y",
-            ],
-        ])
-        media_type = "video/mp4"
-        filename = f"edited_{req.video_id}.mp4"
-    else:
-        output_path = OUTPUT_DIR / f"{req.video_id}_edited.m4a"
-        audio_trims = []
-        for i, (start, end) in enumerate(keep_segments):
-            s = start / 1000.0
-            e = end / 1000.0
-            audio_trims.append(f"[0:a]atrim=start={s}:end={e},asetpts=PTS-STARTPTS[a{i}];")
-
-        n = len(keep_segments)
-        a_labels = "".join(f"[a{i}]" for i in range(n))
-        filter_complex = "".join(audio_trims) + f"{a_labels}concat=n={n}:v=0:a=1[outa]"
-
-        result = run_ffmpeg_export([
-            [
-                "ffmpeg", "-i", video_path,
-                "-filter_complex", filter_complex,
-                "-map", "[outa]",
-                "-c:a", "aac",
-                "-b:a", EXPORT_AUDIO_BITRATE,
-                str(output_path), "-y",
-            ],
-        ])
-        media_type = "audio/mp4"
-        filename = f"edited_{req.video_id}.m4a"
-
-    if result.returncode != 0:
-        raise HTTPException(status_code=500, detail=f"ffmpeg error: {result.stderr}")
-
+    output_path, media_type, filename = render_edited_media(req, preview=True)
     return FileResponse(
         path=str(output_path),
         media_type=media_type,

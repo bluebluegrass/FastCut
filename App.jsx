@@ -14,6 +14,9 @@ export default function App() {
   const [editorDraft, setEditorDraft] = useState(null);
   const [error, setError] = useState(null);
   const [exportUrl, setExportUrl] = useState(null);
+  const [previewUrl, setPreviewUrl] = useState(null);
+  const [previewSignature, setPreviewSignature] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const fileInputRef = useRef();
 
   const handleDrop = useCallback((e) => {
@@ -29,6 +32,9 @@ export default function App() {
     setEditorDraft(null);
     setError(null);
     setExportUrl(null);
+    setPreviewUrl(null);
+    setPreviewSignature(null);
+    setPreviewLoading(false);
   };
 
   const handleTranscribe = async () => {
@@ -82,6 +88,45 @@ export default function App() {
     }
   };
 
+  const handlePreview = useCallback(async (deletedWords) => {
+    if (!session?.video_id) return null;
+    const signature = JSON.stringify(
+      deletedWords.map((word) => ({
+        word: word.word,
+        start_ms: word.start_ms,
+        end_ms: word.end_ms,
+        kind: word.kind,
+      }))
+    );
+
+    if (previewUrl && previewSignature === signature) {
+      return previewUrl;
+    }
+
+    setPreviewLoading(true);
+    try {
+      const res = await fetch(`${API}/preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ video_id: session.video_id, deleted_words: deletedWords }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Preview failed");
+      }
+      const blob = await res.blob();
+      if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+      }
+      const url = URL.createObjectURL(blob);
+      setPreviewUrl(url);
+      setPreviewSignature(signature);
+      return url;
+    } finally {
+      setPreviewLoading(false);
+    }
+  }, [previewSignature, previewUrl, session?.video_id]);
+
   const backToEditing = () => {
     setStage("editing");
     setError(null);
@@ -98,6 +143,12 @@ export default function App() {
     setSession(null);
     setEditorDraft(null);
     setExportUrl(null);
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+    }
+    setPreviewUrl(null);
+    setPreviewSignature(null);
+    setPreviewLoading(false);
     setError(null);
   };
 
@@ -173,8 +224,11 @@ export default function App() {
           session={session}
           draft={editorDraft}
           videoUrl={videoUrl}
+          previewUrl={previewUrl}
+          previewLoading={previewLoading}
           mediaType={mediaType}
           onDraftChange={handleDraftChange}
+          onPreview={handlePreview}
           onExport={handleExport}
         />
       )}
